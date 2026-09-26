@@ -1,4 +1,561 @@
 -- ============================================================
+-- VETERANO TEAM - LOGIN + HUB ACOPLADO
+-- Login validado pelo Google Apps Script antes de iniciar o hub.
+-- ============================================================
+
+-- ============================================================
+--  VETERANO TEAM - LOGIN + HUB
+--  Tela de login primeiro, hub abre só se a key for válida
+-- ============================================================
+
+if not (function()
+    local CFG = {
+        API_URL  = "https://script.google.com/macros/s/AKfycbwwUWN5ZnbvjqyA35Yn5dluDZi7N_G8nAb5fpC7PHbTCCAVn6x7pYMMmjhrmRhp4373/exec",
+        SECRET   = "a56ac0f4838645ea9937c6e0508085c04bd9d83f239d4cdaba868eeadc02afcf",
+        DISCORD  = "https://discord.com/invite/vNKTAtTwFu",
+        TIKTOK   = "https://tiktok.com/@VETERANO.DEV",
+        YOUTUBE  = "https://youtube.com/@veterano_dev",
+        KEY_FILE = "VeteranoTeam/key.txt",
+        TITLE    = "VETERANO RAGE",
+        MAX_TRIES = 5,
+        LOCK_SECS = 15,
+    }
+
+    local env = (getgenv and getgenv()) or _G
+    local cr = cloneref or function(x) return x end
+    local Players          = cr(game:GetService("Players"))
+    local TweenService     = cr(game:GetService("TweenService"))
+    local UserInputService = cr(game:GetService("UserInputService"))
+    local HttpService      = cr(game:GetService("HttpService"))
+    local CoreGui          = cr(game:GetService("CoreGui"))
+
+    local lp = Players.LocalPlayer
+    while not lp do
+        task.wait()
+        lp = Players.LocalPlayer
+    end
+
+    if env.__VT_LOGIN_GUI then
+        pcall(function() env.__VT_LOGIN_GUI:Destroy() end)
+        env.__VT_LOGIN_GUI = nil
+    end
+
+    -- ---------- helpers ----------
+    local function getRequest()
+        return (syn and syn.request) or request or http_request
+            or (http and http.request) or (fluxus and fluxus.request)
+    end
+
+    local function httpPost(url, body)
+        local req = getRequest()
+        if req then
+            local ok, res = pcall(req, {
+                Url = url,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = body,
+            })
+            if ok and type(res) == "table" then
+                return res.Body or res.body
+            end
+        end
+        local ok, res = pcall(function()
+            return game:HttpPost(url, body, "application/json")
+        end)
+        if ok then return res end
+        return nil
+    end
+
+    local function copyText(t)
+        local f = setclipboard or toclipboard or (Clipboard and Clipboard.set)
+        if f then
+            local ok = pcall(f, t)
+            return ok
+        end
+        return false
+    end
+
+    local function readSaved()
+        if type(isfile) ~= "function" or type(readfile) ~= "function" then return nil end
+        local ok, v = pcall(function()
+            if isfile(CFG.KEY_FILE) then return readfile(CFG.KEY_FILE) end
+        end)
+        if ok and type(v) == "string" and v ~= "" then return v end
+        return nil
+    end
+
+    local function saveKey(k)
+        if type(writefile) ~= "function" then return end
+        pcall(function()
+            if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("VeteranoTeam") then
+                makefolder("VeteranoTeam")
+            end
+            writefile(CFG.KEY_FILE, k)
+        end)
+    end
+
+    local function clearSaved()
+        if type(delfile) ~= "function" or type(isfile) ~= "function" then return end
+        pcall(function()
+            if isfile(CFG.KEY_FILE) then delfile(CFG.KEY_FILE) end
+        end)
+    end
+
+    local function cleanKey(s)
+        s = tostring(s or ""):gsub("%s+", ""):upper()
+        return s
+    end
+
+    local function keyLooksValid(k)
+        return k:match("^VTRN%-[A-Z0-9]+%-[A-Z0-9]+$") ~= nil
+    end
+
+    -- ---------- HWID persistente ----------
+    -- O Apps Script grava o primeiro HWID da key. Por isso o HWID
+    -- precisa permanecer o mesmo entre execucoes do script.
+    local HWID_FILE = "VeteranoTeam/hwid.txt"
+
+    local function readHWID()
+        if type(isfile) ~= "function" or type(readfile) ~= "function" then return nil end
+        local ok, v = pcall(function()
+            if isfile(HWID_FILE) then return tostring(readfile(HWID_FILE) or "") end
+        end)
+        if ok and v and v ~= "" then return v end
+        return nil
+    end
+
+    local function saveHWID(v)
+        if type(writefile) ~= "function" then return end
+        pcall(function()
+            if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("VeteranoTeam") then
+                makefolder("VeteranoTeam")
+            end
+            writefile(HWID_FILE, v)
+        end)
+    end
+
+    local function getHWID()
+        local saved = readHWID()
+        if saved and saved ~= "" then return saved end
+        local ok, res = pcall(function()
+            return HttpService:GenerateGUID(false) .. "-" .. tostring(lp.UserId)
+        end)
+        local v = ok and res or (tostring(lp.UserId) .. "-" .. tostring(math.floor(os.clock() * 1000000)))
+        saveHWID(v)
+        return v
+    end
+    local deviceHWID = getHWID()
+
+    -- ---------- transporte HTTP ----------
+    local function httpGet(url)
+        local req = getRequest()
+        if req then
+            local ok, res = pcall(req, {
+                Url = url,
+                Method = "GET",
+                Headers = { ["Accept"] = "application/json" },
+            })
+            if ok and type(res) == "table" then
+                return res.Body or res.body, tonumber(res.StatusCode or res.status_code or 200)
+            end
+        end
+        local ok, res = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok then return res, 200 end
+        return nil, nil
+    end
+
+    local function decodeResponse(resp)
+        if type(resp) ~= "string" then return nil end
+        -- Alguns gateways devolvem espacos/BOM antes do JSON.
+        resp = resp:gsub("^" .. string.char(239, 187, 191), "")
+        resp = resp:gsub("^%s+", ""):gsub("%s+$", "")
+        local ok, data = pcall(function() return HttpService:JSONDecode(resp) end)
+        if ok and type(data) == "table" then return data end
+        return nil
+    end
+
+    local function urlEncode(v)
+        local ok, out = pcall(function() return HttpService:UrlEncode(tostring(v or "")) end)
+        if ok and out then return out end
+        return tostring(v or ""):gsub("%%", "%%25"):gsub("%s", "%%20")
+    end
+
+    -- ---------- validação remota ----------
+    local function validateRemote(key)
+        if CFG.API_URL:find("COLE_AQUI", 1, true) then
+            return false, "Login nao configurado (API_URL)."
+        end
+
+        -- O doGet() do Apps Script foi feito especificamente para Roblox.
+        -- Usamos GET primeiro para evitar problemas de redirect 302 do Google.
+        local query = "?action=validate"
+            .. "&secret=" .. urlEncode(CFG.SECRET)
+            .. "&key=" .. urlEncode(key)
+            .. "&hwid=" .. urlEncode(deviceHWID)
+        local resp, statusCode = httpGet(CFG.API_URL .. query)
+        local data = decodeResponse(resp)
+
+        -- Fallback para POST caso o executor nao permita GET.
+        if not data then
+            local body = HttpService:JSONEncode({
+                secret = CFG.SECRET,
+                action = "validate",
+                key    = key,
+                hwid   = deviceHWID,
+                userid = tostring(lp.UserId),
+            })
+            resp, statusCode = httpPost(CFG.API_URL, body)
+            data = decodeResponse(resp)
+        end
+
+        if not data then
+            if statusCode and tonumber(statusCode) >= 400 then
+                return false, "Servidor retornou HTTP " .. tostring(statusCode) .. "."
+            end
+            return false, "Servidor nao retornou JSON. Verifique a implantacao do Apps Script."
+        end
+
+        if data.ok == true then
+            return true, "Key valida."
+        end
+
+        local err = tostring(data.error or "KEY_INVALIDA")
+        local map = {
+            UNAUTHORIZED     = "Secret invalido (contate o suporte).",
+            KEY_NOT_FOUND    = "Key nao encontrada.",
+            EXPIRADA         = "Key expirada.",
+            ESGOTADA         = "Key esgotada (usos maximos).",
+            REVOGADA         = "Key revogada.",
+            HWID_MISMATCH    = "Key usada em outro dispositivo.",
+            UNKNOWN_ACTION   = "Erro interno do servidor.",
+            UNKNOWN_ERROR    = "Erro desconhecido.",
+        }
+        return false, map[err] or err
+    end
+
+    -- ---------- paleta ----------
+    local C = {
+        bg      = Color3.fromRGB(16, 9, 28),
+        panel   = Color3.fromRGB(26, 15, 44),
+        input   = Color3.fromRGB(34, 20, 58),
+        purple  = Color3.fromRGB(140, 40, 255),
+        purple2 = Color3.fromRGB(200, 100, 255),
+        text    = Color3.fromRGB(240, 232, 255),
+        muted   = Color3.fromRGB(160, 140, 190),
+        ok      = Color3.fromRGB(110, 255, 160),
+        err     = Color3.fromRGB(255, 100, 125),
+        warn    = Color3.fromRGB(255, 200, 100),
+    }
+
+    local function corner(o, r)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, r)
+        c.Parent = o
+        return c
+    end
+    local function stroke(o, col, th, tr)
+        local s = Instance.new("UIStroke")
+        s.Color = col
+        s.Thickness = th or 1
+        s.Transparency = tr or 0
+        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        s.Parent = o
+        return s
+    end
+    local function label(parent, text, size, font, col, pos, sz)
+        local l = Instance.new("TextLabel")
+        l.BackgroundTransparency = 1
+        l.Text = text
+        l.TextSize = size
+        l.Font = font
+        l.TextColor3 = col
+        l.Position = pos
+        l.Size = sz
+        l.TextXAlignment = Enum.TextXAlignment.Center
+        l.Parent = parent
+        return l
+    end
+    local function tween(o, t, props)
+        local tw = TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props)
+        tw:Play()
+        return tw
+    end
+
+    -- ---------- GUI ----------
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "VT_Login_" .. tostring(math.random(1000, 9999))
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 999
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    do
+        local parented = false
+        if gethui then
+            parented = pcall(function() gui.Parent = gethui() end)
+        end
+        if not parented or not gui.Parent then
+            parented = pcall(function() gui.Parent = CoreGui end)
+        end
+        if not parented or not gui.Parent then
+            gui.Parent = lp:WaitForChild("PlayerGui")
+        end
+    end
+    env.__VT_LOGIN_GUI = gui
+
+    -- fundo preto com estrelas
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    bg.BorderSizePixel = 0
+    bg.Parent = gui
+
+    for i = 1, 120 do
+        local star = Instance.new("Frame")
+        star.Size = UDim2.new(0, math.random(1, 2), 0, math.random(1, 2))
+        star.Position = UDim2.new(math.random(), 0, math.random(), 0)
+        star.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        star.BackgroundTransparency = math.random(50, 80) / 100
+        star.BorderSizePixel = 0
+        star.Parent = bg
+    end
+
+    local main = Instance.new("Frame")
+    main.Name = "Main"
+    main.AnchorPoint = Vector2.new(0.5, 0.5)
+    main.Position = UDim2.new(0.5, 0, 0.5, 0)
+    main.Size = UDim2.new(0, 420, 0, 400)
+    main.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    main.BackgroundTransparency = 0.1
+    main.BorderSizePixel = 0
+    main.Parent = bg
+    corner(main, 28)
+    stroke(main, C.purple, 1.5, 0.2)
+
+    local title = label(main, CFG.TITLE, 28, Enum.Font.GothamBlack, C.purple2,
+        UDim2.new(0, 0, 0, 22), UDim2.new(1, 0, 0, 34))
+
+    local subtitle = label(main, "Sistema de Acesso", 12, Enum.Font.Gotham, C.muted,
+        UDim2.new(0, 0, 0, 60), UDim2.new(1, 0, 0, 16))
+
+    local line = Instance.new("Frame")
+    line.Size = UDim2.new(0.5, 0, 0, 1)
+    line.Position = UDim2.new(0.5, 0, 0, 90)
+    line.AnchorPoint = Vector2.new(0.5, 0)
+    line.BackgroundColor3 = Color3.fromRGB(130, 100, 200)
+    line.BackgroundTransparency = 0.5
+    line.Parent = main
+
+    local keyBox = Instance.new("TextBox")
+    keyBox.Size = UDim2.new(0.85, 0, 0, 48)
+    keyBox.Position = UDim2.new(0.5, 0, 0, 120)
+    keyBox.AnchorPoint = Vector2.new(0.5, 0)
+    keyBox.BackgroundColor3 = C.input
+    keyBox.Text = ""
+    keyBox.PlaceholderText = "DIGITE SUA KEY"
+    keyBox.TextColor3 = C.text
+    keyBox.PlaceholderColor3 = C.muted
+    keyBox.Font = Enum.Font.GothamSemibold
+    keyBox.TextSize = 16
+    keyBox.ClearTextOnFocus = false
+    keyBox.TextXAlignment = Enum.TextXAlignment.Center
+    keyBox.Parent = main
+    corner(keyBox, 14)
+    stroke(keyBox, C.purple, 1, 0.6)
+
+    local enterBtn = Instance.new("TextButton")
+    enterBtn.Size = UDim2.new(0.6, 0, 0, 48)
+    enterBtn.Position = UDim2.new(0.5, 0, 0, 190)
+    enterBtn.AnchorPoint = Vector2.new(0.5, 0)
+    enterBtn.BackgroundColor3 = C.purple
+    enterBtn.Text = "VALIDAR ACESSO"
+    enterBtn.TextColor3 = Color3.new(1, 1, 1)
+    enterBtn.Font = Enum.Font.GothamBold
+    enterBtn.TextSize = 15
+    enterBtn.AutoButtonColor = false
+    enterBtn.Parent = main
+    corner(enterBtn, 16)
+    local eg = Instance.new("UIGradient")
+    eg.Color = ColorSequence.new(C.purple2, C.purple)
+    eg.Rotation = 90
+    eg.Parent = enterBtn
+
+    enterBtn.MouseEnter:Connect(function()
+        tween(enterBtn, 0.15, { BackgroundColor3 = Color3.fromRGB(120, 85, 170) })
+    end)
+    enterBtn.MouseLeave:Connect(function()
+        tween(enterBtn, 0.15, { BackgroundColor3 = C.purple })
+    end)
+
+    local status = label(main, "Cole sua key para continuar.", 12, Enum.Font.GothamMedium, C.muted,
+        UDim2.new(0, 20, 0, 250), UDim2.new(1, -40, 0, 20))
+
+    -- botões sociais
+    local socialFrame = Instance.new("Frame")
+    socialFrame.Size = UDim2.new(0.85, 0, 0, 40)
+    socialFrame.Position = UDim2.new(0.5, 0, 0, 285)
+    socialFrame.AnchorPoint = Vector2.new(0.5, 0)
+    socialFrame.BackgroundTransparency = 1
+    socialFrame.Parent = main
+
+    local socialLayout = Instance.new("UIListLayout")
+    socialLayout.FillDirection = Enum.FillDirection.Horizontal
+    socialLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    socialLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    socialLayout.Padding = UDim.new(0, 10)
+    socialLayout.Parent = socialFrame
+
+    local socials = {
+        { name = "TIKTOK",  link = CFG.TIKTOK  },
+        { name = "YOUTUBE", link = CFG.YOUTUBE },
+        { name = "DISCORD", link = CFG.DISCORD },
+    }
+
+    for _, s in ipairs(socials) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0, 105, 0, 36)
+        b.BackgroundColor3 = C.panel
+        b.Text = s.name
+        b.TextColor3 = C.purple2
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 12
+        b.AutoButtonColor = false
+        b.Parent = socialFrame
+        corner(b, 10)
+        stroke(b, C.purple, 1, 0.4)
+
+        b.MouseEnter:Connect(function()
+            tween(b, 0.12, { BackgroundColor3 = Color3.fromRGB(40, 32, 65) })
+        end)
+        b.MouseLeave:Connect(function()
+            tween(b, 0.12, { BackgroundColor3 = C.panel })
+        end)
+
+        b.MouseButton1Click:Connect(function()
+            local copied = copyText(s.link)
+            if copied then
+                status.Text = s.name .. " - Link copiado!"
+                status.TextColor3 = C.ok
+                task.wait(2)
+                status.Text = "Cole sua key para continuar."
+                status.TextColor3 = C.muted
+            else
+                status.Text = s.link
+                status.TextColor3 = C.muted
+            end
+        end)
+    end
+
+    local quote = label(main, "para um bom entendedor, meia palavra basta", 11, Enum.Font.Gotham, Color3.fromRGB(90, 75, 130),
+        UDim2.new(0, 0, 1, -30), UDim2.new(1, 0, 0, 16))
+
+    -- ---------- lógica ----------
+    local result = nil
+    local busy = false
+    local fails = 0
+    local lockedUntil = 0
+
+    local function setStatus(text, kind)
+        status.Text = text
+        status.TextColor3 = (kind == "ok" and C.ok) or (kind == "err" and C.err)
+            or (kind == "warn" and C.warn) or C.muted
+    end
+
+    local function finish(ok)
+        if result ~= nil then return end
+        tween(main, 0.25, { BackgroundTransparency = 1 })
+        task.wait(0.28)
+        pcall(function() gui:Destroy() end)
+        env.__VT_LOGIN_GUI = nil
+        result = ok
+    end
+
+    local fixing = false
+    keyBox:GetPropertyChangedSignal("Text"):Connect(function()
+        if fixing then return end
+        local fixed = cleanKey(keyBox.Text)
+        if fixed ~= keyBox.Text then
+            fixing = true
+            keyBox.Text = fixed
+            fixing = false
+        end
+    end)
+
+    local function attempt(key, silent)
+        if busy then return end
+        if os.clock() < lockedUntil then
+            setStatus("Muitas tentativas. Aguarde " .. math.ceil(lockedUntil - os.clock()) .. "s.", "warn")
+            return
+        end
+        key = cleanKey(key)
+        if key == "" then
+            setStatus("Cole sua key primeiro.", "warn")
+            return
+        end
+        if not keyLooksValid(key) then
+            setStatus("Formato invalido. Ex: VTRN-XXXXXXXX-XXXXXXXX", "err")
+            return
+        end
+
+        busy = true
+        enterBtn.Text = "Verificando..."
+        setStatus(silent and "Verificando key salva..." or "Consultando servidor de keys...", "info")
+
+        local ok, msg = validateRemote(key)
+
+        if ok then
+            saveKey(key)
+            setStatus("Acesso liberado! Carregando o hub...", "ok")
+            enterBtn.Text = "Liberado"
+            task.wait(0.7)
+            busy = false
+            finish(true)
+            return
+        end
+
+        busy = false
+        enterBtn.Text = "VALIDAR ACESSO"
+        if silent then
+            clearSaved()
+            setStatus("Sua key salva expirou. Gere outra no Discord.", "warn")
+            return
+        end
+        fails = fails + 1
+        setStatus(msg, "err")
+        if fails >= CFG.MAX_TRIES then
+            fails = 0
+            lockedUntil = os.clock() + CFG.LOCK_SECS
+            setStatus("Muitas tentativas. Aguarde " .. CFG.LOCK_SECS .. "s.", "warn")
+        end
+    end
+
+    enterBtn.MouseButton1Click:Connect(function() attempt(keyBox.Text, false) end)
+    keyBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then attempt(keyBox.Text, false) end
+    end)
+
+    -- login automático com key salva
+    local saved = readSaved()
+    if saved then
+        saved = cleanKey(saved)
+        keyBox.Text = saved
+        task.spawn(function() attempt(saved, true) end)
+    end
+
+    while result == nil do
+        task.wait(0.1)
+    end
+    return result
+end)() then
+    return
+end
+
+-- ============================================================
+-- VETERANO TEAM - HUB (original, sem alteracoes internas)
+-- ============================================================
+
+-- ============================================================
 --  VETERANO TEAM - HUB (sem key system / login)
 -- ============================================================
 local vthubEnv = (getgenv and getgenv()) or _G
