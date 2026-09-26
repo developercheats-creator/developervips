@@ -2,7 +2,7 @@
 -- VETERANO TEAM - LOGIN + HUB ACOPLADO
 -- Login validado pelo Google Apps Script antes de iniciar o hub.
 -- ============================================================
-
+///
 -- ============================================================
 --  VETERANO TEAM - LOGIN + HUB
 --  Tela de login primeiro, hub abre só se a key for válida
