@@ -459,6 +459,7 @@ local T = {
     walkSpeedKeybind=Enum.KeyCode.V, menuKeybind=z,
     noclipEnabled=false, noclipKeybind=Enum.KeyCode.N,
     flyEnabled=false, flyKeybind=Enum.KeyCode.F, flySpeed=60,
+    ghostEnabled=false,
     aimbotEnabled=false, aimbotMode="Legit", aimbotFov=120, aimbotDistance=500,
     aimbotVisibleOnly=false, aimbotFovVisible=false,
     aimbotHitChance=100, aimbotBodyPart="Cabeca", aimbotSmoothness=0.15,
@@ -473,11 +474,12 @@ local T = {
     autoCintoEnabled=false,
     noclipCarEnabled=false, vFlyEnabled=false,
     vFlyHorizontalSpeed=60, vFlyVerticalSpeed=30,
-    boostFactor=1, alwaysDay=false, fullbright=false,
+    boostFactor=1, fullbright=false,
     noLag=false,
     autoFarmPescaEnabled=false,
     autoColetaEnabled=false, autoColetaCooldown=0.35,
     coletaHudEnabled=false, coletaYOffset=3, coletaReachDistance=4,
+    camuflarNickEnabled=false,
 }
 
 if C.__VETERANO_SINTONIA_CLEANUP then pcall(C.__VETERANO_SINTONIA_CLEANUP) end
@@ -759,7 +761,7 @@ end
 end)()
 
 -- ============================================
--- MUNDO (Sempre Dia / Fullbright / No Lag)
+-- MUNDO (Fullbright / No Lag)
 -- ============================================
 do
     local function capture()
@@ -792,7 +794,7 @@ do
     end
     local function applyWorld()
         local L = game:GetService("Lighting")
-        local active = T.alwaysDay or T.fullbright or T.noLag
+        local active = T.fullbright or T.noLag
         if active and not o.worldOriginal then
             o.worldOriginal = capture()
             local atm = L:FindFirstChildOfClass("Atmosphere")
@@ -803,13 +805,6 @@ do
             return
         end
         if not active then return end
-        if T.alwaysDay then
-            pcall(function() L.ClockTime = 12 end)
-            pcall(function() L.GeographicLatitude = 0 end)
-        elseif o.worldOriginal then
-            pcall(function() L.ClockTime = o.worldOriginal.ClockTime end)
-            pcall(function() L.GeographicLatitude = o.worldOriginal.GeographicLatitude end)
-        end
         if T.fullbright then
             pcall(function()
                 L.Brightness = 3
@@ -857,10 +852,292 @@ do
         acc = acc + dt
         if acc < 0.2 then return end
         acc = 0
-        if T.alwaysDay or T.fullbright or T.noLag then
+        if T.fullbright or T.noLag then
             pcall(applyWorld)
         end
     end))
+end
+
+-- ============================================
+-- GHOST MODE
+-- ============================================
+do
+    local HEIGHT = 10
+    local PLATFORM_OFFSET = 3.5
+    local WALK_ANIMATION_R15 = "rbxassetid://507777826"
+    local WALK_ANIMATION_R6 = "rbxassetid://180426354"
+
+    local isGhost = false
+    local fakeModel = nil
+    local platform = nil
+    local walkTrack = nil
+    local camLockConnection = nil
+    local ghostNoclipEnabled = false
+    local changedParts = {}
+    local targetY = 0
+    local ghostConnection = nil
+    local ghostNoclipLoop = nil
+
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
+    local function startGhostNoclip()
+        if ghostNoclipEnabled then return end
+        ghostNoclipEnabled = true
+        table.clear(changedParts)
+        ghostNoclipLoop = RunService.Stepped:Connect(function()
+            if not ghostNoclipEnabled then return end
+            local char = LocalPlayer.Character
+            if not char then return end
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if not root then return end
+            overlapParams.FilterDescendantsInstances = {char, fakeModel, platform}
+            local parts = workspace:GetPartBoundsInBox(root.CFrame, Vector3.new(4, 6, 4), overlapParams)
+            for _, part in ipairs(parts) do
+                if part:IsA("BasePart") and part.Parent and part ~= platform and part.CanCollide then
+                    if changedParts[part] == nil then changedParts[part] = true end
+                    part.CanCollide = false
+                end
+            end
+        end)
+    end
+
+    local function stopGhostNoclip()
+        ghostNoclipEnabled = false
+        if ghostNoclipLoop then ghostNoclipLoop:Disconnect() ghostNoclipLoop = nil end
+        for part, _ in pairs(changedParts) do
+            if part and part.Parent and part ~= platform then part.CanCollide = true end
+        end
+        table.clear(changedParts)
+    end
+
+    local function setupFakeCharacter(model)
+        local humanoid = model:FindFirstChildOfClass("Humanoid")
+        if not humanoid then return false end
+        humanoid.AutoRotate = false
+        humanoid.PlatformStand = true
+        humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+        for _, state in ipairs({Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Ragdoll, Enum.HumanoidStateType.Jumping, Enum.HumanoidStateType.Climbing, Enum.HumanoidStateType.Swimming, Enum.HumanoidStateType.Freefall, Enum.HumanoidStateType.Flying}) do
+            pcall(function() humanoid:SetStateEnabled(state, false) end)
+        end
+        for _, obj in ipairs(model:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                obj.Anchored = true
+                obj.CanCollide = false
+                obj.CanTouch = false
+                obj.CanQuery = false
+                obj.Massless = true
+            elseif obj:IsA("Script") or obj:IsA("LocalScript") then
+                obj:Destroy()
+            end
+        end
+        local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
+        local animation = Instance.new("Animation")
+        animation.Name = "VeteranoGhostWalk"
+        animation.AnimationId = (humanoid.RigType == Enum.HumanoidRigType.R15) and WALK_ANIMATION_R15 or WALK_ANIMATION_R6
+        local success, track = pcall(function() return animator:LoadAnimation(animation) end)
+        if success and track then
+            walkTrack = track
+            walkTrack.Looped = true
+            walkTrack.Priority = Enum.AnimationPriority.Movement
+        end
+        return true
+    end
+
+    local function updateFakeAnimation(realHumanoid)
+        if not walkTrack then return end
+        local moving = realHumanoid.MoveDirection.Magnitude > 0.05
+        if moving then
+            if not walkTrack.IsPlaying then walkTrack:Play(0.12) end
+            walkTrack:AdjustSpeed(math.clamp(realHumanoid.WalkSpeed / 16, 0.5, 2))
+        else
+            if walkTrack.IsPlaying then walkTrack:Stop(0.12) end
+        end
+    end
+
+    local function updateCameraAndGhost()
+        if not isGhost or not fakeModel or not LocalPlayer.Character then return end
+        local realChar = LocalPlayer.Character
+        local realRoot = realChar:FindFirstChild("HumanoidRootPart")
+        if not realRoot or not platform then return end
+        local fakeHumanoid = fakeModel:FindFirstChildOfClass("Humanoid")
+        if fakeHumanoid and workspace.CurrentCamera.CameraSubject ~= fakeHumanoid then
+            workspace.CurrentCamera.CameraSubject = fakeHumanoid
+        end
+        local currentPos = realRoot.Position
+        realRoot.AssemblyLinearVelocity = Vector3.new(realRoot.AssemblyLinearVelocity.X, 0, realRoot.AssemblyLinearVelocity.Z)
+        platform.CFrame = CFrame.new(currentPos.X, targetY - PLATFORM_OFFSET, currentPos.Z)
+        fakeModel:PivotTo(CFrame.new(currentPos.X, targetY + HEIGHT, currentPos.Z) * realRoot.CFrame.Rotation)
+        local realHumanoid = realChar:FindFirstChildOfClass("Humanoid")
+        if realHumanoid then updateFakeAnimation(realHumanoid) end
+    end
+
+    local function stopGhost()
+        if not isGhost then return end
+        isGhost = false
+        RunService:UnbindFromRenderStep("VeteranoGhostCameraFix")
+        if camLockConnection then camLockConnection:Disconnect() camLockConnection = nil end
+        stopGhostNoclip()
+        if walkTrack then pcall(function() walkTrack:Stop(0.1) end) walkTrack = nil end
+        local realChar = LocalPlayer.Character
+        local realRoot = realChar and realChar:FindFirstChild("HumanoidRootPart")
+        local realHumanoid = realChar and realChar:FindFirstChildOfClass("Humanoid")
+        if realHumanoid then realHumanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true) end
+        if realRoot and fakeModel then
+            local fakeRoot = fakeModel:FindFirstChild("HumanoidRootPart")
+            if fakeRoot then realRoot.CFrame = fakeRoot.CFrame end
+        end
+        if realChar then
+            for _, obj in ipairs(realChar:GetDescendants()) do
+                if obj:IsA("BasePart") then obj.Transparency = 0 obj.CanTouch = true obj.CanQuery = true obj.CanCollide = true end
+            end
+            if realHumanoid then workspace.CurrentCamera.CameraSubject = realHumanoid end
+        end
+        if fakeModel then fakeModel:Destroy() fakeModel = nil end
+        if platform then platform:Destroy() platform = nil end
+    end
+
+    local function startGhost()
+        local realChar = LocalPlayer.Character
+        if not realChar then return end
+        local realRoot = realChar:FindFirstChild("HumanoidRootPart")
+        local realHumanoid = realChar:FindFirstChildOfClass("Humanoid")
+        if not realRoot or not realHumanoid then return end
+        isGhost = true
+        realHumanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+        local startCFrame = realRoot.CFrame
+        targetY = startCFrame.Y - HEIGHT
+        platform = Instance.new("Part")
+        platform.Name = "VeteranoGhostPlatform"
+        platform.Size = Vector3.new(10, 1, 10)
+        platform.Anchored = true
+        platform.CanCollide = true
+        platform.CanTouch = false
+        platform.CanQuery = false
+        platform.Transparency = 1
+        platform.Parent = workspace
+        realChar.Archivable = true
+        for _, desc in ipairs(realChar:GetDescendants()) do desc.Archivable = true end
+        local success, clonedChar = pcall(function() return realChar:Clone() end)
+        if not success or not clonedChar then stopGhost() return end
+        fakeModel = clonedChar
+        fakeModel.Name = "VeteranoGhostVisual"
+        for _, obj in ipairs(fakeModel:GetDescendants()) do if obj:IsA("Script") or obj:IsA("LocalScript") then obj:Destroy() end end
+        fakeModel.Parent = workspace
+        local fakeRoot = fakeModel:FindFirstChild("HumanoidRootPart")
+        local fakeHumanoid = fakeModel:FindFirstChildOfClass("Humanoid")
+        if not fakeRoot or not fakeHumanoid then stopGhost() return end
+        fakeModel.PrimaryPart = fakeRoot
+        if not setupFakeCharacter(fakeModel) then stopGhost() return end
+        fakeModel:PivotTo(startCFrame)
+        for _, obj in ipairs(realChar:GetDescendants()) do if obj:IsA("BasePart") then obj.Transparency = 1 end end
+        startGhostNoclip()
+        realRoot.CFrame = CFrame.new(startCFrame.X, targetY, startCFrame.Z) * startCFrame.Rotation
+        workspace.CurrentCamera.CameraSubject = fakeHumanoid
+        camLockConnection = workspace.CurrentCamera:GetPropertyChangedSignal("CameraSubject"):Connect(function()
+            if isGhost and fakeHumanoid and workspace.CurrentCamera.CameraSubject ~= fakeHumanoid then
+                workspace.CurrentCamera.CameraSubject = fakeHumanoid
+            end
+        end)
+        RunService:BindToRenderStep("VeteranoGhostCameraFix", Enum.RenderPriority.Last.Value, updateCameraAndGhost)
+    end
+
+    o.startGhost = startGhost
+    o.stopGhost = stopGhost
+    o.isGhostActive = function() return isGhost end
+
+    handleReady(LocalPlayer.CharacterAdded:Connect(function() if isGhost then stopGhost() end end))
+end
+
+-- ============================================
+-- CAMUFLAR NICK (INVENTARIO)
+-- ============================================
+do
+    local NOME_FAKE = "VETERANO.DEV"
+    local CAMINHOS_NOME = {
+        {"InventoryUI", "InvFrame", "InvPessoal", "BTxt"},
+    }
+    local nomesReais = { LocalPlayer.Name, LocalPlayer.DisplayName }
+    if nomesReais[1] == nomesReais[2] then nomesReais = { nomesReais[1] } end
+    local nickAtivo = false
+    local cacheNick = {}
+    local nickConnection = nil
+
+    local function pegarPorCaminho(caminho)
+        local atual = parentGui
+        for _, nome in ipairs(caminho) do
+            if not atual then return nil end
+            atual = atual:FindFirstChild(nome)
+        end
+        return atual
+    end
+
+    local function substituirNome(texto)
+        if not texto then return nil end
+        local novo = texto
+        local mudou = false
+        for _, nome in ipairs(nomesReais) do
+            if nome and #nome > 1 then
+                local t = novo:lower()
+                local n = nome:lower()
+                local s, e = t:find(n, 1, true)
+                while s do
+                    novo = novo:sub(1, s - 1) .. NOME_FAKE .. novo:sub(e + 1)
+                    mudou = true
+                    t = novo:lower()
+                    s, e = t:find(n, (s + #NOME_FAKE), true)
+                end
+            end
+        end
+        if mudou then return novo end
+        return nil
+    end
+
+    local function aplicarNick()
+        local total = 0
+        for _, caminho in ipairs(CAMINHOS_NOME) do
+            local obj = pegarPorCaminho(caminho)
+            if obj and (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then
+                local ok, txt = pcall(function() return obj.Text end)
+                if ok and txt then
+                    local novo = substituirNome(txt)
+                    if novo then
+                        if not cacheNick[obj] then cacheNick[obj] = txt end
+                        obj.Text = novo
+                        total = total + 1
+                    end
+                end
+            end
+        end
+        return total
+    end
+
+    local function restaurarNick()
+        for obj, txt in pairs(cacheNick) do
+            if obj and obj.Parent then
+                pcall(function() obj.Text = txt end)
+            end
+        end
+        cacheNick = {}
+    end
+
+    local function loopNick()
+        while nickAtivo and not o.destroyed do
+            task.wait(0.5)
+            if nickAtivo then pcall(aplicarNick) end
+        end
+    end
+
+    o.setCamuflarNick = function(v)
+        nickAtivo = v == true
+        T.camuflarNickEnabled = nickAtivo
+        if nickAtivo then
+            pcall(aplicarNick)
+            task.spawn(loopNick)
+        else
+            pcall(restaurarNick)
+        end
+    end
 end
 
 -- ============================================
@@ -3419,6 +3696,14 @@ do
                 task.spawn(function() pcall(o.coletarItem, cur) end)
             end
         end)
+        tp.TouchTap:Connect(function()
+            local curIdx = row:GetAttribute("ItemIdx")
+            local drops = o.listDrops and o.listDrops() or {}
+            local cur = drops[curIdx]
+            if cur and cur.item and cur.item.Parent then
+                task.spawn(function() pcall(o.coletarItem, cur) end)
+            end
+        end)
     end
 
     local function refresh()
@@ -3647,6 +3932,7 @@ leftPanel.ScrollBarThickness = 4
 leftPanel.ScrollBarImageColor3 = TC
 leftPanel.CanvasSize = UDim2.new(0,0,0,0)
 leftPanel.AutomaticCanvasSize = Enum.AutomaticSize.Y
+leftPanel.ClipsDescendants = true
 leftPanel.Parent = container
 local lpCorner = Instance.new("UICorner"); lpCorner.CornerRadius = UDim.new(0,10); lpCorner.Parent = leftPanel
 local lpStr = Instance.new("UIStroke"); lpStr.Color = LINE; lpStr.Thickness = 1; lpStr.Parent = leftPanel
@@ -3913,6 +4199,9 @@ local function criarSep(txt)
     l.Parent = leftPanel
 end
 
+-- ============================================
+-- DROPDOWN CORRIGIDO PARA MOBILE
+-- ============================================
 local function criarDropdown(texto, options, default, onChange)
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(1, 0, 0, isMobile and 50 or 44)
@@ -3948,34 +4237,39 @@ local function criarDropdown(texto, options, default, onChange)
     cur.Parent = frame
     cur.ZIndex = 6
 
+    -- Botão que cobre o frame (para abrir o dropdown)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1,0,1,0)
+    btn.Size = UDim2.new(1, 0, 1, 0)
     btn.BackgroundTransparency = 1
     btn.Text = ""
-    btn.Parent = frame
     btn.ZIndex = 7
+    btn.Parent = frame
 
-    local list = Instance.new("Frame")
-    list.Size = UDim2.new(1, 0, 0, 0)
-    list.Position = UDim2.new(0, 0, 1, 4)
-    list.BackgroundColor3 = BG2
-    list.BorderSizePixel = 0
-    list.ClipsDescendants = true
-    list.Visible = false
-    list.ZIndex = 50
-    list.Parent = frame
-    local lc = Instance.new("UICorner"); lc.CornerRadius = UDim.new(0,8); lc.Parent = list
-    local ls = Instance.new("UIStroke"); ls.Color = TC; ls.Thickness = 1; ls.Transparency = 0.4; ls.Parent = list
-    local ll = Instance.new("UIListLayout"); ll.Padding = UDim.new(0,2); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = list
+    -- Lista de opções (fora do frame para não ser clipada)
+    local overlay = Instance.new("Frame")
+    overlay.Name = "DropdownOverlay"
+    overlay.Size = UDim2.new(1, 0, 0, 0)
+    overlay.Position = UDim2.new(0, 0, 1, 4)
+    overlay.BackgroundColor3 = BG2
+    overlay.BorderSizePixel = 0
+    overlay.ClipsDescendants = true
+    overlay.Visible = false
+    overlay.ZIndex = 60
+    overlay.Parent = frame
+    local lc = Instance.new("UICorner"); lc.CornerRadius = UDim.new(0,8); lc.Parent = overlay
+    local ls = Instance.new("UIStroke"); ls.Color = TC; ls.Thickness = 1; ls.Transparency = 0.4; ls.Parent = overlay
+    local ll = Instance.new("UIListLayout"); ll.Padding = UDim.new(0,2); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = overlay
     local lpad = Instance.new("UIPadding")
     lpad.PaddingTop = UDim.new(0, 4)
     lpad.PaddingBottom = UDim.new(0, 4)
     lpad.PaddingLeft = UDim.new(0, 4)
     lpad.PaddingRight = UDim.new(0, 4)
-    lpad.Parent = list
+    lpad.Parent = overlay
 
     local open = false
-    local rowH = 28
+    local rowH = 30
+    local totalH = (#options * (rowH + 2)) + 8
+
     for i, opt in ipairs(options) do
         local o = Instance.new("TextButton")
         o.Size = UDim2.new(1, 0, 0, rowH)
@@ -3986,9 +4280,9 @@ local function criarDropdown(texto, options, default, onChange)
         o.TextSize = 11
         o.BorderSizePixel = 0
         o.LayoutOrder = i
-        o.ZIndex = 51
+        o.ZIndex = 61
         o.AutoButtonColor = false
-        o.Parent = list
+        o.Parent = overlay
         local oc = Instance.new("UICorner"); oc.CornerRadius = UDim.new(0,6); oc.Parent = o
         o.MouseEnter:Connect(function()
             TweenService:Create(o, TweenInfo.new(0.1), {BackgroundColor3=Color3.fromRGB(60,35,100)}):Play()
@@ -4000,8 +4294,8 @@ local function criarDropdown(texto, options, default, onChange)
             cur.Text = tostring(opt)
             cur.TextColor3 = TC
             open = false
-            TweenService:Create(list, TweenInfo.new(0.15), {Size=UDim2.new(1,0,0,0)}):Play()
-            task.delay(0.16, function() list.Visible = false end)
+            TweenService:Create(overlay, TweenInfo.new(0.15), {Size=UDim2.new(1,0,0,0)}):Play()
+            task.delay(0.16, function() overlay.Visible = false end)
             if onChange then pcall(onChange, opt) end
         end
         o.MouseButton1Click:Connect(sel)
@@ -4011,12 +4305,11 @@ local function criarDropdown(texto, options, default, onChange)
     local function toggleList()
         open = not open
         if open then
-            local total = (#options * (rowH + 2)) + 8
-            list.Visible = true
-            TweenService:Create(list, TweenInfo.new(0.15), {Size=UDim2.new(1,0,0,total)}):Play()
+            overlay.Visible = true
+            TweenService:Create(overlay, TweenInfo.new(0.15), {Size=UDim2.new(1,0,0,totalH)}):Play()
         else
-            TweenService:Create(list, TweenInfo.new(0.15), {Size=UDim2.new(1,0,0,0)}):Play()
-            task.delay(0.16, function() list.Visible = false end)
+            TweenService:Create(overlay, TweenInfo.new(0.15), {Size=UDim2.new(1,0,0,0)}):Play()
+            task.delay(0.16, function() overlay.Visible = false end)
         end
     end
     btn.MouseButton1Click:Connect(toggleList)
@@ -4061,11 +4354,15 @@ local updateContent = function()
                 pcall(xz)
             end)
             criarSlider("Vel. Fly", 16, 250, function() return T.flySpeed end, function(v) T.flySpeed = v end, 1)
-            criarSep("MUNDO")
-            criarToggle("Sempre Dia", function() return T.alwaysDay end, function(v)
-                T.alwaysDay = v
-                pcall(o.applyWorld)
+            criarToggle("Ghost Mode", function() return T.ghostEnabled end, function(v)
+                T.ghostEnabled = v
+                if v then
+                    if o.startGhost then pcall(o.startGhost) end
+                else
+                    if o.stopGhost then pcall(o.stopGhost) end
+                end
             end)
+            criarSep("MUNDO")
             criarToggle("Fullbright", function() return T.fullbright end, function(v)
                 T.fullbright = v
                 pcall(o.applyWorld)
@@ -4074,7 +4371,7 @@ local updateContent = function()
                 T.noLag = v
                 pcall(o.applyWorld)
             end)
-            rTextLbl.Text = "PLAYER - Jogador\n\nWalkSpeed:\n  Aumenta a velocidade de corrida.\n  O servidor limita em 28 pra nao dar kick.\n\nJumpPower:\n  Aumenta a forca do pulo. Padrao = 50.\n\nNoclip:\n  Atravessa paredes. Use com cuidado.\n\nFly:\n  Voa com WASD.\n  Space = subir | Ctrl = descer\n\nSempre Dia:\n  Trava o horario em meio-dia.\n\nFullbright:\n  Mundo claro sem sombras e nevoa.\n\nNo Lag:\n  Desliga sombras/blur/sunrays pra ganhar FPS."
+            rTextLbl.Text = "PLAYER - Jogador\n\nWalkSpeed:\n  Aumenta a velocidade de corrida.\n  O servidor limita em 28 pra nao dar kick.\n\nJumpPower:\n  Aumenta a forca do pulo. Padrao = 50.\n\nNoclip:\n  Atravessa paredes. Use com cuidado.\n\nFly:\n  Voa com WASD.\n  Space = subir | Ctrl = descer\n\nGhost Mode:\n  Fica invisivel e voa como fantasma.\n  Seu corpo real fica escondido\n  enquanto um clone te representa.\n\nFullbright:\n  Mundo claro sem sombras e nevoa.\n\nNo Lag:\n  Desliga sombras/blur/sunrays pra ganhar FPS."
 
         elseif activeTab == "ESP" then
             rTitle.Text = "ESP"
@@ -4176,7 +4473,6 @@ local updateContent = function()
                     end
                     bs.Color = TC
                     bs.Thickness = 2
-                    Xz("Cor do tracer: "..nome)
                 end
                 btn.MouseButton1Click:Connect(aplicar)
                 btn.TouchTap:Connect(aplicar)
@@ -4209,6 +4505,10 @@ local updateContent = function()
                     if o.restaurarGacha then pcall(o.restaurarGacha) end
                 end
             end)
+            criarSep("CAMUFLAGEM")
+            criarToggle("Camuflar Nick (VETERANO.DEV)", function() return T.camuflarNickEnabled end, function(v)
+                if o.setCamuflarNick then pcall(o.setCamuflarNick, v) end
+            end)
             criarSep("AUTO FARM")
             criarToggle("Auto Farm Partes de Arma", function() return T.farmPartesEnabled end, function(v)
                 if v and T.flyEnabled then T.flyEnabled = false; pcall(xz) end
@@ -4233,7 +4533,7 @@ local updateContent = function()
             criarBotao("Curar", curar)
             criarBotao("Destravar Portas", destravar)
             criarBotao("Encher Municao", encherMunicao)
-            rTextLbl.Text = "MISC - Diversos\n\nPerfect Lockpick:\n  Sempre acerta a posicao correta.\n\n2x Sorte (Gacha):\n  Aumenta chances de itens raros.\n\nAuto Farm Partes de Arma:\n  Teleporta automaticamente para\n  as pecas de arma espalhadas no mapa.\n\nAuto Farm Lixeiro:\n  Pega lixo e entrega automaticamente.\n\nAuto Farm Pesca:\n  Teleporta pra area e pega tudo.\n\nAcoes Rapidas:\n  Curar = enche vida\n  Destravar = abre portas\n  Municao = 999 balas"
+            rTextLbl.Text = "MISC - Diversos\n\nPerfect Lockpick:\n  Sempre acerta a posicao correta.\n\n2x Sorte (Gacha):\n  Aumenta chances de itens raros.\n\nCamuflar Nick:\n  Substitui seu nome no inventario\n  por VETERANO.DEV.\n\nAuto Farm Partes de Arma:\n  Teleporta automaticamente para\n  as pecas de arma espalhadas no mapa.\n\nAuto Farm Lixeiro:\n  Pega lixo e entrega automaticamente.\n\nAuto Farm Pesca:\n  Teleporta pra area e pega tudo.\n\nAcoes Rapidas:\n  Curar = enche vida\n  Destravar = abre portas\n  Municao = 999 balas"
 
         elseif activeTab == "VEICULO" then
             rTitle.Text = "VEICULO"
@@ -4303,7 +4603,7 @@ local updateContent = function()
             infoPad.PaddingTop = UDim.new(0,8); infoPad.PaddingLeft = UDim.new(0,10)
             infoPad.PaddingRight = UDim.new(0,10); infoPad.PaddingBottom = UDim.new(0,8)
             infoPad.Parent = infoLbl
-            local infoStroke = Instance.new("UIStroke"); infoStroke.Color = TC; infoStroke.Thickness = 1; infoStroke.Transparency = 0.5; infoStroke.Parent = infoLbl
+            -- Removido o UIStroke (neon) do texto da equipe
 
             criarSep("MONITORAR STAFF")
             criarToggle("Ativar Monitor Staff", function() return T.monitorarStaff end, function(v)
@@ -4339,6 +4639,8 @@ local updateContent = function()
                 if o.stopAutoColeta then pcall(o.stopAutoColeta) end
                 if o.setColetaHudVisible then pcall(o.setColetaHudVisible, false) end
                 if o.pararFarmPartes then pcall(o.pararFarmPartes) end
+                if o.stopGhost then pcall(o.stopGhost) end
+                if o.setCamuflarNick then pcall(o.setCamuflarNick, false) end
                 Xz("Menu resetado.")
                 updateContent()
             end)
@@ -4360,7 +4662,7 @@ local updateContent = function()
             local infoLbl2 = Instance.new("TextLabel")
             infoLbl2.Size = UDim2.new(1, 0, 0, isMobile and 70 or 60)
             infoLbl2.BackgroundColor3 = BG3
-            infoLbl2.Text = "Build: vt-team-v5\nTecla do menu: K\nFly: F | Noclip: N"
+            infoLbl2.Text = "Build: vt-team-v6\nTecla do menu: K\nFly: F | Noclip: N"
             infoLbl2.TextColor3 = DIM
             infoLbl2.Font = Enum.Font.Gotham
             infoLbl2.TextSize = isMobile and 9 or 10
@@ -4504,7 +4806,7 @@ end)
 updateContent()
 
 C.__VETERANO_SINTONIA_WINDOW = screenGui
-C.__VETERANO_SINTONIA_BUILD = "vt-team-v5"
+C.__VETERANO_SINTONIA_BUILD = "vt-team-v6"
 C.__VETERANO_SINTONIA_CLEANUP = function()
     o.destroyed = true
     C.__VETERANO_SINTONIA_RUNTIME = nil
@@ -4519,6 +4821,8 @@ C.__VETERANO_SINTONIA_CLEANUP = function()
     if o.destruirDurabilidade then pcall(o.destruirDurabilidade) end
     if o.restaurarNoclipCar then pcall(o.restaurarNoclipCar) end
     if o.restaurarGacha then pcall(o.restaurarGacha) end
+    if o.stopGhost then pcall(o.stopGhost) end
+    if o.setCamuflarNick then pcall(o.setCamuflarNick, false) end
     pcall(function() screenGui:Destroy() end)
     pcall(function()
         local g = parentGui:FindFirstChild("VeteranoStaffHUD")
@@ -4526,4 +4830,4 @@ C.__VETERANO_SINTONIA_CLEANUP = function()
     end)
 end
 
-print("[VETERANO TEAM | SINTONIA RP V2] Carregado (v5)")
+print("[VETERANO TEAM | SINTONIA RP V2] Carregado (v6)")
