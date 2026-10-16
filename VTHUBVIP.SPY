@@ -2409,7 +2409,12 @@ local function aimbotLoop()
             local currentLook = cam.CFrame.LookVector
             local desiredLook = (targetPos-myPos).Unit
             local smooth = math.clamp(T.aimbotSmoothness, 0.01, 1)
-            local newLook = currentLook:Lerp(desiredLook, smooth*3)
+            local factor = math.clamp(smooth * 8, 0.02, 0.35)
+            local dot = currentLook:Dot(desiredLook)
+            if dot > 0.998 then
+                factor = 0.6
+            end
+            local newLook = currentLook:Lerp(desiredLook, factor)
             cam.CFrame = CFrame.new(myPos, myPos+newLook)
         end
     end)
@@ -2482,9 +2487,75 @@ handleReady(RunService.RenderStepped:Connect(function()
 end))
 
 -- ============================================
--- COLETAR ITENS
+-- COLETAR ITENS (SOMENTE ARMAS DA LISTA)
 -- ============================================
 local ZF, DF, rF, hF, jF, WF = 20, 14, 1.5, D, 18, 65
+
+-- ===== WHITELIST DE ARMAS =====
+local WHITELIST_ARMAS = {
+    -- Facil
+    ["ak47"] = true,
+    ["fal"] = true,
+    ["fuzil"] = true,
+    ["glock"] = true,
+    ["oitÃ£o"] = true,
+    ["oit_o"] = true,
+    ["oit_o_"] = true,
+    ["submetralhadora"] = true,
+    ["usps"] = true,
+    ["uzi"] = true,
+
+    -- Media
+    ["barret"] = true,
+    ["fuzilhollow"] = true,
+    ["fuzilphantom"] = true,
+    ["fuziltrovÃ£o"] = true,
+    ["fuziltrovao"] = true,
+    ["g3"] = true,
+    ["ptdragon"] = true,
+    ["ptneon"] = true,
+    ["ptnk"] = true,
+
+    -- Limited
+    ["armapdsecreta"] = true,
+    ["fuzilninja"] = true,
+    ["fuzilpascoa"] = true,
+    ["fuzilpÃ¡scoa"] = true,
+    ["natalina"] = true,
+    ["ptninja"] = true,
+    ["ptpascoa"] = true,
+    ["ptpÃ¡scoa"] = true,
+}
+
+-- Normaliza: minusculo, sem acento, sem espaÃ§o/simbolo
+local function normalizarNome(nome)
+    if not nome then return "" end
+    local n = tostring(nome)
+    n = n:gsub("[Ã¡Ã Ã£Ã¢Ã¤]", "a")
+    n = n:gsub("[Ã©Ã¨ÃªÃ«]", "e")
+    n = n:gsub("[Ã­Ã¬Ã®Ã¯]", "i")
+    n = n:gsub("[Ã³Ã²ÃµÃ´Ã¶]", "o")
+    n = n:gsub("[ÃºÃ¹Ã»Ã¼]", "u")
+    n = n:gsub("Ã§", "c")
+    n = n:lower():gsub("[^%w]", "")
+    return n
+end
+
+local function ehArmaPermitida(nome)
+    local key = normalizarNome(nome)
+    if key == "" then return false end
+    if WHITELIST_ARMAS[key] then return true end
+    for arma in pairs(WHITELIST_ARMAS) do
+        if #arma >= 3 and key:find(arma, 1, true) then return true end
+    end
+    return false
+end
+
+o.ehArmaPermitida = ehArmaPermitida
+
+-- ===== POSICAO DE RETORNO (apos coletar) =====
+local POSICAO_RETORNO = Vector3.new(-227, 38, 144)
+
 local function aF(obj)
     if obj:IsA("BasePart") then return obj end
     if obj:IsA("Model") then return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart") end
@@ -2604,6 +2675,22 @@ local function GF(target, checkDone)
             task.wait(0.15)
         end
     end
+
+    -- ===== VOLTA PARA A POSICAO FIXA APOS COLETAR =====
+    if reached and runId == o.itemTeleportRunId and not o.destroyed then
+        local rootBack = isUpdatePlayerGetMagnitudeCValid()
+        if rootBack then
+            -- espera um pouco pra pegar o item
+            task.wait(0.25)
+            rootBack = isUpdatePlayerGetMagnitudeCValid()
+            if rootBack then
+                rootBack.CFrame = CFrame.new(POSICAO_RETORNO)
+                rootBack.AssemblyLinearVelocity = Vector3.zero
+                rootBack.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    end
+
     if not hadNoclip and runId == o.itemTeleportRunId then
         T.noclipEnabled = false
         pcall(Nz)
@@ -2628,7 +2715,7 @@ o.listDrops = function()
                 if not vistos[obj] then
                     vistos[obj] = true
                     local part = aF(obj)
-                    if part then
+                    if part and ehArmaPermitida(obj.Name) then
                         table.insert(out, {
                             item = obj, parte = part, nome = obj.Name,
                             distancia = (root.Position - part.Position).Magnitude,
@@ -2642,7 +2729,7 @@ o.listDrops = function()
         for _, obj in ipairs(workspace:GetDescendants()) do
             if not vistos[obj] and obj:IsA("BasePart") then
                 local isChar = LocalPlayer.Character and obj:IsDescendantOf(LocalPlayer.Character)
-                if not isChar then
+                if not isChar and ehArmaPermitida(obj.Name) then
                     local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
                     if prompt and prompt.Enabled then
                         vistos[obj] = true
@@ -3517,7 +3604,7 @@ local function encherMunicao()
 end
 
 -- ============================================
--- HUD FLUTUANTE: ITENS NO CHÃO
+-- HUD FLUTUANTE: ITENS NO CHAO (SOMENTE ARMAS)
 -- ============================================
 do
     local hudGui = Instance.new("ScreenGui")
@@ -3554,7 +3641,7 @@ do
     title.Position = UDim2.fromOffset(14, 0)
     title.Size = UDim2.new(1, -90, 1, 0)
     title.Font = Enum.Font.GothamBold
-    title.Text = "Itens no chão"
+    title.Text = "Armas no chao"
     title.TextColor3 = WH
     title.TextSize = 13
     title.TextXAlignment = Enum.TextXAlignment.Left
@@ -3639,7 +3726,7 @@ do
     emptyMsg.BackgroundTransparency = 1
     emptyMsg.Size = UDim2.new(1, 0, 0, 30)
     emptyMsg.Font = Enum.Font.Gotham
-    emptyMsg.Text = "Nenhum item dropado"
+    emptyMsg.Text = "Nenhuma arma dropada"
     emptyMsg.TextColor3 = DIM
     emptyMsg.TextSize = 12
     emptyMsg.ZIndex = 5
@@ -4237,7 +4324,6 @@ local function criarDropdown(texto, options, default, onChange)
     cur.Parent = frame
     cur.ZIndex = 6
 
-    -- Botão que cobre o frame (para abrir o dropdown)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, 0, 1, 0)
     btn.BackgroundTransparency = 1
@@ -4245,7 +4331,6 @@ local function criarDropdown(texto, options, default, onChange)
     btn.ZIndex = 7
     btn.Parent = frame
 
-    -- Lista de opções (fora do frame para não ser clipada)
     local overlay = Instance.new("Frame")
     overlay.Name = "DropdownOverlay"
     overlay.Size = UDim2.new(1, 0, 0, 0)
@@ -4271,24 +4356,24 @@ local function criarDropdown(texto, options, default, onChange)
     local totalH = (#options * (rowH + 2)) + 8
 
     for i, opt in ipairs(options) do
-        local o = Instance.new("TextButton")
-        o.Size = UDim2.new(1, 0, 0, rowH)
-        o.BackgroundColor3 = BG3
-        o.Text = opt
-        o.TextColor3 = WH
-        o.Font = Enum.Font.GothamSemibold
-        o.TextSize = 11
-        o.BorderSizePixel = 0
-        o.LayoutOrder = i
-        o.ZIndex = 61
-        o.AutoButtonColor = false
-        o.Parent = overlay
-        local oc = Instance.new("UICorner"); oc.CornerRadius = UDim.new(0,6); oc.Parent = o
-        o.MouseEnter:Connect(function()
-            TweenService:Create(o, TweenInfo.new(0.1), {BackgroundColor3=Color3.fromRGB(60,35,100)}):Play()
+        local o2 = Instance.new("TextButton")
+        o2.Size = UDim2.new(1, 0, 0, rowH)
+        o2.BackgroundColor3 = BG3
+        o2.Text = opt
+        o2.TextColor3 = WH
+        o2.Font = Enum.Font.GothamSemibold
+        o2.TextSize = 11
+        o2.BorderSizePixel = 0
+        o2.LayoutOrder = i
+        o2.ZIndex = 61
+        o2.AutoButtonColor = false
+        o2.Parent = overlay
+        local oc = Instance.new("UICorner"); oc.CornerRadius = UDim.new(0,6); oc.Parent = o2
+        o2.MouseEnter:Connect(function()
+            TweenService:Create(o2, TweenInfo.new(0.1), {BackgroundColor3=Color3.fromRGB(60,35,100)}):Play()
         end)
-        o.MouseLeave:Connect(function()
-            TweenService:Create(o, TweenInfo.new(0.1), {BackgroundColor3=BG3}):Play()
+        o2.MouseLeave:Connect(function()
+            TweenService:Create(o2, TweenInfo.new(0.1), {BackgroundColor3=BG3}):Play()
         end)
         local function sel()
             cur.Text = tostring(opt)
@@ -4298,8 +4383,8 @@ local function criarDropdown(texto, options, default, onChange)
             task.delay(0.16, function() overlay.Visible = false end)
             if onChange then pcall(onChange, opt) end
         end
-        o.MouseButton1Click:Connect(sel)
-        o.TouchTap:Connect(sel)
+        o2.MouseButton1Click:Connect(sel)
+        o2.TouchTap:Connect(sel)
     end
 
     local function toggleList()
@@ -4603,7 +4688,6 @@ local updateContent = function()
             infoPad.PaddingTop = UDim.new(0,8); infoPad.PaddingLeft = UDim.new(0,10)
             infoPad.PaddingRight = UDim.new(0,10); infoPad.PaddingBottom = UDim.new(0,8)
             infoPad.Parent = infoLbl
-            -- Removido o UIStroke (neon) do texto da equipe
 
             criarSep("MONITORAR STAFF")
             criarToggle("Ativar Monitor Staff", function() return T.monitorarStaff end, function(v)
